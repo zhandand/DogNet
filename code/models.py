@@ -43,25 +43,33 @@ class GCN(nn.Module):
 class GAMENet(nn.Module):
     def __init__(self, vocab_size, ehr_adj, ddi_adj, emb_dim=64, device=torch.device('cpu:0'), ddi_in_memory=True):
         super(GAMENet, self).__init__()
+        # embedding number
         K = len(vocab_size)
         self.K = K
+        # len of diag, len of pro, len of med
         self.vocab_size = vocab_size
         self.device = device
         self.tensor_ddi_adj = torch.FloatTensor(ddi_adj).to(device)
         self.ddi_in_memory = ddi_in_memory
+        # embedding of diag, pro
         self.embeddings = nn.ModuleList(
             [nn.Embedding(vocab_size[i], emb_dim) for i in range(K-1)])
         self.dropout = nn.Dropout(p=0.4)
 
+        # Dual-RNN part
         self.encoders = nn.ModuleList([nn.GRU(emb_dim, emb_dim*2, batch_first=True) for _ in range(K-1)])
 
+        # q = f([h_d,h_p])
         self.query = nn.Sequential(
             nn.ReLU(),
             nn.Linear(emb_dim * 4, emb_dim),
         )
 
+        # GCN to learn embedding on grug combination usage
+        # Mb = Z1 + β * Z2
         self.ehr_gcn = GCN(voc_size=vocab_size[2], emb_dim=emb_dim, adj=ehr_adj, device=device)
         self.ddi_gcn = GCN(voc_size=vocab_size[2], emb_dim=emb_dim, adj=ddi_adj, device=device)
+        # β
         self.inter = nn.Parameter(torch.FloatTensor(1))
 
         self.output = nn.Sequential(
@@ -89,40 +97,52 @@ class GAMENet(nn.Module):
         i1_seq = torch.cat(i1_seq, dim=1) #(1,seq,dim)
         i2_seq = torch.cat(i2_seq, dim=1) #(1,seq,dim)
 
+        # Dual-RNN for diagnose
         o1, h1 = self.encoders[0](
             i1_seq
         ) # o1:(1, seq, dim*2) hi:(1,1,dim*2)
+         # Dual-RNN for procedure
         o2, h2 = self.encoders[1](
             i2_seq
         )
+        # q = f([h_d,h_p])
         patient_representations = torch.cat([o1, o2], dim=-1).squeeze(dim=0) # (seq, dim*4)
         queries = self.query(patient_representations) # (seq, dim)
 
         # graph memory module
         '''I:generate current input'''
+        # the last query
         query = queries[-1:] # (1,dim)
 
         '''G:generate graph memory bank and insert history information'''
+        # memory bank
         if self.ddi_in_memory:
+            # Mb = Z1 + β * Z2
             drug_memory = self.ehr_gcn() - self.ddi_gcn() * self.inter  # (size, dim)
         else:
             drug_memory = self.ehr_gcn()
 
         if len(input) > 1:
+            # Dynamic Bank
             history_keys = queries[:(queries.size(0)-1)] # (seq-1, dim)
-
+            # query: medication 
             history_values = np.zeros((len(input)-1, self.vocab_size[2]))
             for idx, adm in enumerate(input):
                 if idx == len(input)-1:
                     break
+                # multi-hot medication
+                # eg. [0,1,0,...,1,0]
                 history_values[idx, adm[2]] = 1
             history_values = torch.FloatTensor(history_values).to(self.device) # (seq-1, size)
 
         '''O:read from global memory bank and dynamic memory bank'''
+        # 根据病人representation计算与药物的相似性 softmax后作为权重
+        # (similarity between patient representation and facts in Mb)
         key_weights1 = F.softmax(torch.mm(query, drug_memory.t()), dim=-1)  # (1, size)
         fact1 = torch.mm(key_weights1, drug_memory)  # (1, dim)
 
         if len(input) > 1:
+            # 根据病人representation计算与历史记录中相似的病人信息
             visit_weight = F.softmax(torch.mm(query, history_keys.t())) # (1, seq-1)
             weighted_values = visit_weight.mm(history_values) # (1, size)
             fact2 = torch.mm(weighted_values, drug_memory) # (1, dim)
@@ -144,6 +164,8 @@ class GAMENet(nn.Module):
         """Initialize weights."""
         initrange = 0.1
         for item in self.embeddings:
+            # TODO: concat gram embedding
+            # embedding of diagnose and procedure
             item.weight.data.uniform_(-initrange, initrange)
 
         self.inter.data.uniform_(-initrange, initrange)

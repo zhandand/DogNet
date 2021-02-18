@@ -99,9 +99,12 @@ def main():
     ddi_adj_path = '../data/ddi_A_final.pkl'
     device = torch.device('cuda:0')
 
+    # adjacent matrix of medicine
     ehr_adj = dill.load(open(ehr_adj_path, 'rb'))
+    # adjacent matrix of ddi
     ddi_adj = dill.load(open(ddi_adj_path, 'rb'))
     data = dill.load(open(data_path, 'rb'))
+    # transform medical word to corresponding idx
     voc = dill.load(open(voc_path, 'rb'))
     diag_voc, pro_voc, med_voc = voc['diag_voc'], voc['pro_voc'], voc['med_voc']
 
