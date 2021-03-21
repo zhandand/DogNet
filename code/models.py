@@ -41,7 +41,7 @@ class GCN(nn.Module):
         return mx
 
 class GAMENet(nn.Module):
-    def __init__(self, vocab_size, ehr_adj, ddi_adj, emb_dim=64, device=torch.device('cpu:0'), ddi_in_memory=True):
+    def __init__(self, vocab_size, ehr_adj, ddi_adj,leavesList,ancestorsList,tempEmb, emb_dim=64,attentionDimSize=200, device=torch.device('cpu:0'), ddi_in_memory=True):
         super(GAMENet, self).__init__()
         # embedding number
         K = len(vocab_size)
@@ -53,7 +53,9 @@ class GAMENet(nn.Module):
         self.ddi_in_memory = ddi_in_memory
         # embedding of diag, pro
         self.embeddings = nn.ModuleList(
-            [nn.Embedding(vocab_size[i], emb_dim) for i in range(K-1)])
+            self.form_diag_embedding(leavesList,ancestorsList),
+            nn.Embedding(vocab_size[1], emb_dim))
+            # [nn.Embedding(vocab_size[i], emb_dim) for i in range(K-1)])
         self.dropout = nn.Dropout(p=0.4)
 
         # Dual-RNN part
@@ -78,8 +80,11 @@ class GAMENet(nn.Module):
             nn.ReLU(),
             nn.Linear(emb_dim * 2, vocab_size[2])
         )
-
-        self.init_weights()
+        self.tempEmb = tempEmb
+        self.W_attention = nn.Parameter(torch.FloatTensor(emb_dim * 2, attentionDimSize))
+        self.b_attention = nn.Parameter(torch.FloatTensor( attentionDimSize))
+        self.v_attention = nn.Parameter(torch.FloatTensor( attentionDimSize))
+        self.init_weights(leavesList,ancestorsList)
 
     def forward(self, input):
         # input (adm, 3, codes)
@@ -160,15 +165,33 @@ class GAMENet(nn.Module):
         else:
             return output
 
-    def init_weights(self):
+    def generate_attention(self,leaves, ancestors):
+        attentionInput = torch.cat((self.tempEmd[leaves], self.tempEmd[ancestors]), axis=1)
+        mlpOutput = torch.tanh(torch.matmul(attentionInput, self.W_attention) +self.b_attention) 
+        preAttention = torch.matmul(mlpOutput, self.v_attention)
+        attention = F.softmax(preAttention,dim = 0)
+        return attention
+
+    def init_weights(self,leavesList,ancestorsList):
         """Initialize weights."""
         initrange = 0.1
-        for item in self.embeddings:
-            # TODO: concat gram embedding
-            # embedding of diagnose and procedure
-            item.weight.data.uniform_(-initrange, initrange)
-
+        # for item in self.embeddings:
+        #     # TODO: concat gram embedding
+        #     # embedding of diagnose and procedure
+        #     item.weight.data.uniform_(-initrange, initrange)
+        self.embeddings[1].weight.data.uniform_(-initrange, initrange)
         self.inter.data.uniform_(-initrange, initrange)
+    
+    def form_diag_embedding(self,leavesList,ancestorsList)
+        embList= []
+        for leaves, ancestors in zip(leavesList, ancestorsList):
+            tempAttention = self.generate_attention(leaves, ancestors)
+            # tempEmb = (self.tempEmd[ancestors] * tempAttention[:,:,None]).sum(axis=1)
+            tempEmb = torch.matmul(torch.diag(tempAttention),self.tempEmd[ancestors]).sum(axis=0)
+            embList.append(torch.unsqueeze(tempEmb,dim=0))
+        return torch.cat(embList,axis = 0)
+    
+    
 
 '''
 DMNC

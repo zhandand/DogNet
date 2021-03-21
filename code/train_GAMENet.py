@@ -3,6 +3,7 @@ import argparse
 import numpy as np
 import dill
 import time
+import pickle
 from torch.nn import CrossEntropyLoss
 from torch.optim import Adam
 import os
@@ -28,6 +29,32 @@ parser.add_argument('--ddi', action='store_true', default=False, help="using ddi
 args = parser.parse_args()
 model_name = args.model_name
 resume_name = args.resume_path
+
+def build_tree(tree_path):
+    treeMap = pickle.load(open(tree_path, 'rb'))
+    ancestors = np.array(treeMap.values()).astype('int32')
+    ancSize = ancestors.shape[1]
+    leaves = []
+    for k in treeMap.keys():
+        leaves.append([k] * ancSize)
+    leaves = np.array(leaves).astype('int32')
+    return leaves, ancestors
+
+
+def load_embedding(emd_path):
+    """根据glove算法的结果生成drug embedding
+    Args:
+        emd_path ([type]): [description]
+
+    Returns:
+       drug embedding : vocab_size * vector_size
+    """    
+    m = np.load(emd_path)
+    vocab_size = m.shape[0] / 2
+    # vector_size = m.shape[1] 
+    # w = np.empty([vocab_size,vector_size],dtype="float") 
+    w = (m[:vocab_size]+m[vocab_size:]) / 2
+    return w
 
 def eval(model, data_eval, voc_size, epoch):
     # evaluate
@@ -95,6 +122,9 @@ def main():
     data_path = '../data/records_final.pkl'
     voc_path = '../data/voc_final.pkl'
 
+    tree_path = '../data/tree.pkl'
+    emb_path = "../data/embedding.pkl"
+
     ehr_adj_path = '../data/ehr_adj_final.pkl'
     ddi_adj_path = '../data/ddi_A_final.pkl'
     device = torch.device('cuda:0')
@@ -107,6 +137,15 @@ def main():
     # transform medical word to corresponding idx
     voc = dill.load(open(voc_path, 'rb'))
     diag_voc, pro_voc, med_voc = voc['diag_voc'], voc['pro_voc'], voc['med_voc']
+
+    embedding = dill.load(open(emb_path, 'rb'))
+
+    leavesList = []
+    ancestorsList = []
+    for i in range(5, 0, -1): # An ICD9 diagnosis code can have at most five ancestors (including the artificial root) when using CCS multi-level grouper. 
+        leaves, ancestors = build_tree(tree_path+'.level'+str(i)+'.pk')
+        leavesList.append(leaves)
+        ancestorsList.append(ancestors)
 
     split_point = int(len(data) * 2 / 3)
     data_train = data[:split_point]
@@ -124,7 +163,7 @@ def main():
     decay_weight = 0.85
 
     voc_size = (len(diag_voc.idx2word), len(pro_voc.idx2word), len(med_voc.idx2word))
-    model = GAMENet(voc_size, ehr_adj, ddi_adj, emb_dim=64, device=device, ddi_in_memory=DDI_IN_MEM)
+    model = GAMENet(voc_size, ehr_adj, ddi_adj, leavesList,ancestorsList,embedding,emb_dim=64, device=device, ddi_in_memory=DDI_IN_MEM)
     if TEST:
         model.load_state_dict(torch.load(open(resume_name, 'rb')))
     model.to(device=device)
