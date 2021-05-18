@@ -2,22 +2,32 @@
 # @Time       : 2021/03/08 16:12:52
 # @Author     : Zhan Genze <947783684@qq.com>
 # @Project    : projects
-# @Description:  
+# @Description:  this program accepts the data_path which is about to save embedding
+#                                     the coMap which stores the diagnose cooccurence
+#                                     the voc file which provide the embedding size
+#                             returns the diagnose embedding  
 
 import dill
 import argparse
 import pdb
 import logging
+import random
+import matplotlib
 
 import numpy as np
 from tqdm import tqdm
 from random import shuffle
 from math import log
+import matplotlib.pyplot as plt
+matplotlib.use('Agg')
+
+np.random.seed(1031)
+random.seed(1031)
 
 logger = logging.getLogger("glove")
 epsilon = 0.01
 
-def run_iter(data,learning_rate = 0.05,x_max =100,alpha = 0.75):
+def run_iter(data,learning_rate = 0.001,x_max =100,alpha = 0.75):
     """
     Run a single iteration of GloVe training using the given
     cooccurrence data and the previously computed weight vectors /
@@ -90,7 +100,7 @@ def run_iter(data,learning_rate = 0.05,x_max =100,alpha = 0.75):
 
         return global_cost
         
-def train_glove(vocab,cooccurrences,vector_size = 100,iterations = 1000):
+def train_glove(vocab,cooccurrences,vector_size = 64,iterations = 1000):
     """
     train glove vector on the given 'coocurrences',where 
     each element of the form is 
@@ -109,8 +119,11 @@ def train_glove(vocab,cooccurrences,vector_size = 100,iterations = 1000):
     # two for each word, or discarding the context vectors.
     # TODO: 源代码中还除以了一个float(vector_size + 1)，不知道啥意思
     # pdb.set_trace()
-    W = (np.random.rand(vocab_size * 2,vector_size)-0.5)/ float(vector_size + 1)
-    biases = (np.random.rand(vector_size*2) - 0.5)/ float(vector_size + 1)
+    # W = (np.random.rand(vocab_size * 2,vector_size)-0.5)/ float(vector_size + 1)
+    # biases = (np.random.rand(vocab_size*2) - 0.5)/ float(vector_size + 1)
+    W = np.random.rand(vocab_size * 2,vector_size)-0.5
+    biases = np.random.rand(vocab_size*2) - 0.5
+
 
     # Training is done via adaptive gradient descent (AdaGrad). To make
     # this work we need to store the sum of squares of all previous
@@ -134,29 +147,51 @@ def train_glove(vocab,cooccurrences,vector_size = 100,iterations = 1000):
                                      : i_context + vocab_size + 1],
              cooccurrence)   for (i_main, i_context),cooccurrence in cooccurrences.items()]  
 
+    loss = []
+    best_iter = -1
+    min_lost = float('inf')
+    best_embedding = W.copy()
     for i in tqdm(range(iterations)):
         cost = run_iter(data)
-
+        loss.append(cost)
         logger.info(f"\t\tTime {i} Done (cost %f)", cost)   
 
         log_cost('Time ' +str(i) +' done, cost '+ str(cost)+'\n')
 
-        if(cost <= epsilon):
-            break
+        if cost < min_lost:
+            best_iter = i
+            min_lost = cost
+            best_embedding = W.copy()
+
+        # if cost <= epsilon:
+        #     break
     
-    save_model(W)
+    log_cost('best iterration: '+ str(best_iter) +" loss: "+str(min_lost))
 
-    return W
+    save_embedding(best_embedding)
 
-def save_model(W, path="../data/"):
+    iter = list(range(len(loss)))
+    fig = plt.figure('loss curve')
+    #设置x轴、y轴名称
+    plt.xlabel('iter')
+    plt.ylabel('loss')
+
+    #画连线图，以x_list中的值为横坐标，以y_list中的值为纵坐标
+    #参数c指定连线的颜色，linewidth指定连线宽度，alpha指定连线的透明度
+    plt.plot(iter, loss, color='r', linewidth=1, alpha=0.6)
+    plt.savefig('loss_curve.png')
+
+    return best_embedding
+
+def save_embedding(W, path="../data/"):
     with open("../data/" + "embedding.pkl", 'wb') as f:
         dill.dump(W, f)
 
-    logger.info("Saved vectors to %s", path + "embedding.pkl")
+    logger.info("Saved embedding to %s", path + "embedding.pkl")
 
 def log_cost(data):
     # pdb.set_trace()
-    with open("../" + "log.txt","a") as f:
+    with open("../data/" + "glove_log.txt","a") as f:
         f.write(data)
 
 if __name__ == "__main__":
@@ -166,11 +201,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_path",default = "../data/",help = "the path that stores data")
     parser.add_argument("--coMap",default = "cooccurrenceMap.pkl",help = "cooccurencemap")
-    parser.add_argument("--voc",default = "type.pkl",help = "the voc file")
+    parser.add_argument("--voc",default = "type.pkl",help = "the diagnose voc file")
     args = parser.parse_args()	    
 
     cooccurrences = dill.load(open(args.data_path + args.coMap,"rb"))
     # vocab = dill.load(open(args.data_path + args.voc,"rb"))['diag_voc'].idx2word
     vocab = dill.load(open(args.data_path + args.voc,"rb"))
     # pdb.set_trace()
-    train_glove(vocab,cooccurrences,len(vocab))
+    train_glove(vocab,cooccurrences)

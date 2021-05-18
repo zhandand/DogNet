@@ -1,4 +1,5 @@
-from sklearn.metrics import jaccard_similarity_score, roc_auc_score, precision_score, f1_score, average_precision_score
+# from sklearn.metrics import jaccard_similarity_score, roc_auc_score, precision_score, f1_score, average_precision_score
+from sklearn.metrics import jaccard_score, roc_auc_score, precision_score, f1_score, average_precision_score
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -239,3 +240,13 @@ def ddi_rate_score(record, path='../data/ddi_A_final.pkl'):
     if all_cnt == 0:
         return 0
     return dd_cnt / all_cnt
+
+def average_recall(y_gt, y_pred):
+    score = []
+    for b in range(y_gt.shape[0]):
+        target = np.where(y_gt[b] == 1)[0]
+        out_list = np.where(y_pred[b] == 1)[0]
+        inter = set(out_list) & set(target)
+        recall_score = 1 if len(target) == 0 else len(inter) / len(target)
+        score.append(recall_score)
+    return np.mean(score)

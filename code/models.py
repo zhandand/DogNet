@@ -4,7 +4,15 @@ import torch.nn.functional as F
 import numpy as np
 from dnc import DNC
 from layers import GraphConvolution
+import pdb
 
+initrange = 0.1
+
+def init_weight(m):
+    print(m)
+    if type(m) == nn.Linear:
+        m.weight.data.fill_(1.0)
+        print(m.weight)
 '''
 Our model
 '''
@@ -41,23 +49,44 @@ class GCN(nn.Module):
         return mx
 
 class GAMENet(nn.Module):
-    def __init__(self, vocab_size, ehr_adj, ddi_adj,leavesList,ancestorsList,tempEmb, emb_dim=64,attentionDimSize=200, device=torch.device('cpu:0'), ddi_in_memory=True):
+    def __init__(self, vocab_size, ehr_adj, ddi_adj,leavesList,ancestorsList,tempEmb, emb_dim = 64,attentionDimSize=200, device=torch.device('cpu:0'), ddi_in_memory=True):
         super(GAMENet, self).__init__()
         # embedding number
         K = len(vocab_size)
+
         self.K = K
-        # len of diag, len of pro, len of med
+        # len of diag 1960, len of pro 1432, len of med 153
         self.vocab_size = vocab_size
         self.device = device
+        self.emb_dim = emb_dim
         self.tensor_ddi_adj = torch.FloatTensor(ddi_adj).to(device)
         self.ddi_in_memory = ddi_in_memory
+        self.leavesList = leavesList
+        self.ancestorList = ancestorsList
+        # the diagnose embedding from glove training
+        self.tempEmb = torch.from_numpy(tempEmb).float().to(device)
+        # emb_dim: the vector length for each diagnose 
+        # attentionDimSize: the length for attention,finally return a scalar， so it's just a temp value
+        # f(e_i,e_j) = u_a * tanh(W_a * [e_i,e_j] + b_a)
+        self.attention = nn.Linear(emb_dim * 2,attentionDimSize).to(device)
+        # self.W_attention = nn.Parameter(torch.FloatTensor(emb_dim * 2, attentionDimSize).to(device))
+        # self.b_attention = nn.Parameter(torch.FloatTensor( attentionDimSize).to(device))
+        self.v_attention = nn.Parameter(torch.FloatTensor( attentionDimSize).to(device))
         # embedding of diag, pro
-        self.embeddings = nn.ModuleList(
-            self.form_diag_embedding(leavesList,ancestorsList),
-            nn.Embedding(vocab_size[1], emb_dim))
-            # [nn.Embedding(vocab_size[i], emb_dim) for i in range(K-1)])
+        # self.embeddings = nn.ModuleList(
+        #     [nn.Embedding(vocab_size[i], emb_dim) for i in range(K-1)])
+        #     self.form_diag_embedding(leavesList,ancestorsList),
+        #     nn.Embedding(vocab_size[1], emb_dim)])
+        # self.v_attention.data.uniform_(-initrange, initrange)
+        self.v_attention.data = self.v_attention.data.normal_(-initrange,initrange)
+        # pdb.set_trace()
+        self.embeddings = [
+            # self.form_diag_embedding(leavesList,ancestorsList).to(device),
+            [],
+            nn.Embedding(vocab_size[1], emb_dim).to(device)]
+            
         self.dropout = nn.Dropout(p=0.4)
-
+        # pdb.set_trace()
         # Dual-RNN part
         self.encoders = nn.ModuleList([nn.GRU(emb_dim, emb_dim*2, batch_first=True) for _ in range(K-1)])
 
@@ -80,25 +109,26 @@ class GAMENet(nn.Module):
             nn.ReLU(),
             nn.Linear(emb_dim * 2, vocab_size[2])
         )
-        self.tempEmb = tempEmb
-        self.W_attention = nn.Parameter(torch.FloatTensor(emb_dim * 2, attentionDimSize))
-        self.b_attention = nn.Parameter(torch.FloatTensor( attentionDimSize))
-        self.v_attention = nn.Parameter(torch.FloatTensor( attentionDimSize))
+        
         self.init_weights(leavesList,ancestorsList)
 
     def forward(self, input):
         # input (adm, 3, codes)
-
+        self.embeddings[0] = self.form_diag_embedding(self.leavesList,self.ancestorList)
         # generate medical embeddings and queries
         i1_seq = []
         i2_seq = []
         def mean_embedding(embedding):
             return embedding.mean(dim=1).unsqueeze(dim=0)  # (1,1,dim)
         for adm in input:
-            i1 = mean_embedding(self.dropout(self.embeddings[0](torch.LongTensor(adm[0]).unsqueeze(dim=0).to(self.device)))) # (1,1,dim)
+            # i1 = mean_embedding(self.dropout(self.embeddings[0](torch.LongTensor(adm[0]).unsqueeze(dim=0).to(self.device)))) # (1,1,dim)
+            # pdb.set_trace()
+            # print(self.embeddings[0][torch.LongTensor(adm[0]).unsqueeze(dim=0).to(self.device)])
+            i1 = mean_embedding(self.embeddings[0][torch.LongTensor(adm[0]).unsqueeze(dim=0).to(self.device)]) # (1,1,dim)
             i2 = mean_embedding(self.dropout(self.embeddings[1](torch.LongTensor(adm[1]).unsqueeze(dim=0).to(self.device))))
             i1_seq.append(i1)
             i2_seq.append(i2)
+            # pdb.set_trace()
         i1_seq = torch.cat(i1_seq, dim=1) #(1,seq,dim)
         i2_seq = torch.cat(i2_seq, dim=1) #(1,seq,dim)
 
@@ -166,31 +196,48 @@ class GAMENet(nn.Module):
             return output
 
     def generate_attention(self,leaves, ancestors):
-        attentionInput = torch.cat((self.tempEmd[leaves], self.tempEmd[ancestors]), axis=1)
-        mlpOutput = torch.tanh(torch.matmul(attentionInput, self.W_attention) +self.b_attention) 
+        # pdb.set_trace()
+        # attentionInput = torch.cat((self.tempEmb[leaves], self.tempEmb[ancestors]), axis=2)
+        attentionInput = torch.cat((self.tempEmb.clone()[torch.from_numpy(leaves).long()], self.tempEmb.clone()[torch.from_numpy(ancestors).long()]), axis=2)
+        # attentionInput = torch.cat((self.tempEmb[leaves], self.tempEmb[ancestors]), axis=0)
+        # mlpOutput = torch.tanh(torch.matmul(attentionInput, self.W_attention) +self.b_attention) 
+        # mlpOutput = torch.tanh(torch.matmul(attentionInput, self.W_attention) + self.b_attention) 
+        mlpOutput = torch.tanh(self.attention(attentionInput)) 
         preAttention = torch.matmul(mlpOutput, self.v_attention)
-        attention = F.softmax(preAttention,dim = 0)
+        attention = F.softmax(preAttention,dim = 1)
         return attention
 
     def init_weights(self,leavesList,ancestorsList):
         """Initialize weights."""
         initrange = 0.1
         # for item in self.embeddings:
-        #     # TODO: concat gram embedding
         #     # embedding of diagnose and procedure
         #     item.weight.data.uniform_(-initrange, initrange)
         self.embeddings[1].weight.data.uniform_(-initrange, initrange)
         self.inter.data.uniform_(-initrange, initrange)
-    
-    def form_diag_embedding(self,leavesList,ancestorsList)
+        # self.W_attention.data.uniform_(-initrange, initrange)
+        # self.b_attention.data.uniform_(-initrange, initrange)
+        # self.v_attention.data.uniform_(-initrange, initrange)
+        # nn.init.xavier_normal_(self.W_attention.data,gain = 1.414)
+        # nn.init.xavier_normal_(self.b_attention.data,gain = 1.414)
+        # nn.init.xavier_normal_(self.v_attention.data,gain = 1.414)
+
+        # self.W_attention.data = self.W_attention.data.normal_(-initrange, initrange)
+        # self.v_attention.data = self.v_attention.data.normal_(-initrange, initrange)
+
+    def form_diag_embedding(self,leavesList,ancestorsList):
         embList= []
         for leaves, ancestors in zip(leavesList, ancestorsList):
-            tempAttention = self.generate_attention(leaves, ancestors)
-            # tempEmb = (self.tempEmd[ancestors] * tempAttention[:,:,None]).sum(axis=1)
-            tempEmb = torch.matmul(torch.diag(tempAttention),self.tempEmd[ancestors]).sum(axis=0)
-            embList.append(torch.unsqueeze(tempEmb,dim=0))
+            tempAttention1 = self.generate_attention(leaves, ancestors)
+            # tempEmb = (self.tempEmb[ancestors] * tempAttention[:,:,None]).sum(axis=1)
+            tempAttention2 = tempAttention1.unsqueeze(1).reshape(leaves.shape[0],leaves.shape[1] ,1)  # num  * leaf2root  * 1
+            tempAttention3 = tempAttention2.repeat(1,1,self.emb_dim)
+            # tempEmb = torch.matmul(torch.diag_embed(tempAttention),self.tempEmb[torch.from_numpy(ancestors).long()]).sum(axis=0)
+            tempEmb = torch.mul(tempAttention3,self.tempEmb[torch.from_numpy(ancestors).long()]).sum(axis=1)
+            # embList.append(torch.unsqueeze(tempEmb,dim=0))
+            embList.append(tempEmb)
+            # pdb.set_trace()
         return torch.cat(embList,axis = 0)
-    
     
 
 '''

@@ -4,6 +4,7 @@ import numpy as np
 import dill
 import time
 import pickle
+import pdb
 from torch.nn import CrossEntropyLoss
 from torch.optim import Adam
 import os
@@ -11,10 +12,14 @@ import torch.nn.functional as F
 from collections import defaultdict
 
 from models import GAMENet
-from util import llprint, multi_label_metric, ddi_rate_score, get_n_params
+from util import llprint, multi_label_metric, ddi_rate_score, get_n_params, average_recall
 
 torch.manual_seed(1203)
 np.random.seed(1203)
+
+import os
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 model_name = 'GAMENet'
 resume_name = ''
@@ -32,7 +37,7 @@ resume_name = args.resume_path
 
 def build_tree(tree_path):
     treeMap = pickle.load(open(tree_path, 'rb'))
-    ancestors = np.array(treeMap.values()).astype('int32')
+    ancestors = np.array(list(treeMap.values())).astype('int32')
     ancSize = ancestors.shape[1]
     leaves = []
     for k in treeMap.keys():
@@ -41,27 +46,30 @@ def build_tree(tree_path):
     return leaves, ancestors
 
 
-def load_embedding(emd_path):
-    """根据glove算法的结果生成drug embedding
+def load_embedding(emb_path):
+    """根据glove算法的结果生成diagnose embedding
     Args:
-        emd_path ([type]): [description]
-
+        embpath ([type]): [description]
     Returns:
        drug embedding : vocab_size * vector_size
     """    
-    m = np.load(emd_path)
-    vocab_size = m.shape[0] / 2
+    tmpEmb = pickle.load(open(emb_path, 'rb'))
+    # pdb.set_trace()
+    tmpEmb = np.array(tmpEmb)
+    vocab_size = int(tmpEmb.shape[0] / 2)
     # vector_size = m.shape[1] 
     # w = np.empty([vocab_size,vector_size],dtype="float") 
-    w = (m[:vocab_size]+m[vocab_size:]) / 2
-    return w
+    embedding = (tmpEmb[:vocab_size]+tmpEmb[vocab_size:]) / 2
+    # pdb.set_trace()
+    return embedding
 
-def eval(model, data_eval, voc_size, epoch):
+def eval(model, data_eval, voc_size, epoch, rare_vec):
     # evaluate
     print('')
     model.eval()
     smm_record = []
     ja, prauc, avg_p, avg_r, avg_f1 = [[] for _ in range(5)]
+    avg_recall = []
     case_study = defaultdict(dict)
     med_cnt = 0
     visit_cnt = 0
@@ -70,6 +78,9 @@ def eval(model, data_eval, voc_size, epoch):
         y_pred = []
         y_pred_prob = []
         y_pred_label = []
+        y_gt_r = []
+        y_pred_r = []
+
         for adm_idx, adm in enumerate(input):
 
             target_output1 = model(input[:adm_idx+1])
@@ -77,21 +88,36 @@ def eval(model, data_eval, voc_size, epoch):
             y_gt_tmp = np.zeros(voc_size[2])
             y_gt_tmp[adm[2]] = 1
             y_gt.append(y_gt_tmp)
+            # pdb.set_trace()
+            y_gt_rare = np.bitwise_and(y_gt_tmp.astype(int),rare_vec.astype(int))
 
             target_output1 = F.sigmoid(target_output1).detach().cpu().numpy()[0]
             y_pred_prob.append(target_output1)
             y_pred_tmp = target_output1.copy()
             y_pred_tmp[y_pred_tmp>=0.5] = 1
             y_pred_tmp[y_pred_tmp<0.5] = 0
+
+            y_pred_rare = np.bitwise_and(y_pred_tmp.astype(int),rare_vec.astype(int))
+
+            if(y_gt_rare.sum()!=0):
+                y_gt_r.append(y_gt_rare)
+                y_pred_r.append(y_pred_rare)
+
             y_pred.append(y_pred_tmp)
             y_pred_label_tmp = np.where(y_pred_tmp == 1)[0]
             y_pred_label.append(sorted(y_pred_label_tmp))
             visit_cnt += 1
             med_cnt += len(y_pred_label_tmp)
+            # pdb.set_trace()
 
 
         smm_record.append(y_pred_label)
         adm_ja, adm_prauc, adm_avg_p, adm_avg_r, adm_avg_f1 = multi_label_metric(np.array(y_gt), np.array(y_pred), np.array(y_pred_prob))
+
+        rare_recall = -1
+        if(len(y_gt_r)!=0):
+            rare_recall = average_recall(np.array(y_gt_r),np.array(y_pred_r))
+
         case_study[adm_ja] = {'ja': adm_ja, 'patient': input, 'y_label': y_pred_label}
 
         ja.append(adm_ja)
@@ -99,6 +125,9 @@ def eval(model, data_eval, voc_size, epoch):
         avg_p.append(adm_avg_p)
         avg_r.append(adm_avg_r)
         avg_f1.append(adm_avg_f1)
+        if(rare_recall!=-1):
+            avg_recall.append(rare_recall)
+
         llprint('\rEval--Epoch: %d, Step: %d/%d' % (epoch, step, len(data_eval)))
 
     # ddi rate
@@ -106,6 +135,10 @@ def eval(model, data_eval, voc_size, epoch):
 
     llprint('\tDDI Rate: %.4f, Jaccard: %.4f,  PRAUC: %.4f, AVG_PRC: %.4f, AVG_RECALL: %.4f, AVG_F1: %.4f\n' % (
         ddi_rate, np.mean(ja), np.mean(prauc), np.mean(avg_p), np.mean(avg_r), np.mean(avg_f1)
+    ))
+    # pdb.set_trace()
+    llprint('RARE AVG_RECALL: %.4f\n' % (
+        np.mean(avg_recall)
     ))
     dill.dump(obj=smm_record, file=open('../data/gamenet_records.pkl', 'wb'))
     dill.dump(case_study, open(os.path.join('saved', model_name, 'case_study.pkl'), 'wb'))
@@ -119,11 +152,13 @@ def main():
     if not os.path.exists(os.path.join("saved", model_name)):
         os.makedirs(os.path.join("saved", model_name))
 
-    data_path = '../data/records_final.pkl'
-    voc_path = '../data/voc_final.pkl'
+    data_path = '../data/tree/records_final.pkl'
+    voc_path = '../data/tree/voc_final.pkl'
 
-    tree_path = '../data/tree.pkl'
+    tree_path = '../data/tree/'
     emb_path = "../data/embedding.pkl"
+    rare_med_path = '../data/rare_med.pkl'
+    # pdb.set_trace()
 
     ehr_adj_path = '../data/ehr_adj_final.pkl'
     ddi_adj_path = '../data/ddi_A_final.pkl'
@@ -136,9 +171,18 @@ def main():
     data = dill.load(open(data_path, 'rb'))
     # transform medical word to corresponding idx
     voc = dill.load(open(voc_path, 'rb'))
+    rare_med = pickle.load(open(rare_med_path,"rb"))
+    
+
     diag_voc, pro_voc, med_voc = voc['diag_voc'], voc['pro_voc'], voc['med_voc']
 
-    embedding = dill.load(open(emb_path, 'rb'))
+    
+    rare_vec = np.zeros(len(med_voc.idx2word))
+    for index in rare_med:
+        rare_vec[index] = 1
+    # pdb.set_trace()
+    
+    embedding = load_embedding(emb_path)
 
     leavesList = []
     ancestorsList = []
@@ -162,8 +206,8 @@ def main():
     T = 0.5
     decay_weight = 0.85
 
-    voc_size = (len(diag_voc.idx2word), len(pro_voc.idx2word), len(med_voc.idx2word))
-    model = GAMENet(voc_size, ehr_adj, ddi_adj, leavesList,ancestorsList,embedding,emb_dim=64, device=device, ddi_in_memory=DDI_IN_MEM)
+    voc_size = (len(diag_voc.idx2word), len(pro_voc.idx2word), len(med_voc.idx2word))   #[1960,1432,153]
+    model = GAMENet(voc_size, ehr_adj, ddi_adj, leavesList,ancestorsList,tempEmb = embedding, device=device, ddi_in_memory=DDI_IN_MEM)
     if TEST:
         model.load_state_dict(torch.load(open(resume_name, 'rb')))
     model.to(device=device)
@@ -172,7 +216,7 @@ def main():
     optimizer = Adam(list(model.parameters()), lr=LR)
 
     if TEST:
-        eval(model, data_test, voc_size, 0)
+        eval(model, data_test, voc_size, 0,rare_vec)
     else:
         history = defaultdict(list)
         best_epoch = 0
@@ -185,6 +229,7 @@ def main():
             neg_loss_cnt = 0
             for step, input in enumerate(data_train):
                 for idx, adm in enumerate(input):
+                    # pdb.set_trace()
                     seq_input = input[:idx+1]
                     loss1_target = np.zeros((1, voc_size[2]))
                     loss1_target[:, adm[2]] = 1
@@ -218,6 +263,7 @@ def main():
 
                     optimizer.zero_grad()
                     loss.backward(retain_graph=True)
+                    # loss.backward()
                     optimizer.step()
 
                     loss_record1.append(loss.item())
@@ -226,7 +272,8 @@ def main():
             # annealing
             T *= decay_weight
 
-            ddi_rate, ja, prauc, avg_p, avg_r, avg_f1 = eval(model, data_eval, voc_size, epoch)
+            # ddi_rate, ja, prauc, avg_p, avg_r, avg_f1 = eval(model, data_eval, voc_size, epoch)
+            ddi_rate, ja, prauc, avg_p, avg_r, avg_f1 = eval(model, data_eval, voc_size, epoch, rare_vec)
 
             history['ja'].append(ja)
             history['ddi_rate'].append(ddi_rate)
