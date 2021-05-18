@@ -1,7 +1,8 @@
 # GAMENet
 GAMENet : Graph Augmented MEmory Networks for Recommending Medication Combination
-
 For reproduction of medication prediction results in our [paper](https://arxiv.org/abs/1809.01852), see instructions below.
+
+此仓库为在GAMENet上的改进，在疾病码的embedding部分加入了icd9层级信息，使用glove预训练得到疾病码的embedding后利用注意力机制学习到更好的embedding。
 
 ## Overview
 This repository contains code necessary to run GAMENet model. GAMENet is an end-to-end model mainly based on graph convolutional networks (GCN) and memory augmented nerual networks (MANN). Paitent history information and drug-drug interactions knowledge are utilized to provide safe and personalized recommendation of medication combination. GAMENet is tested on real-world clinical dataset [MIMIC-III](https://mimic.physionet.org/) and outperformed several state-of-the-art deep learning methods in heathcare area in all effectiveness measures and also achieved higher DDI rate reduction from existing EHR data.
@@ -41,18 +42,5 @@ Data information in ./data:
  python train_GAMENet.py --model_name GAMENet --ddi# training with DDI knowledge
  python train_GAMENet.py --model_name GAMENet --ddi --resume_path Epoch_{}_JA_{}_DDI_{}.model --eval # testing with DDI knowledge
  python train_GAMENet.py --model_name GAMENet # training without DDI knowledge
- python train_GAMENet.py --model_name GAMENet --resume_path Epoch_{}_JA_{}_DDI_{}.model --eval # testing with DDI knowledge
+ python train_GAMENet.py --model_name GAMENet --resume_path Epoch_{}_JA_{}_DDI_{}.model --eval # testing without DDI knowledge
  ```
- 
-## Cite 
-
-Please cite our paper if you use this code in your own work:
-
-```
-@article{shang2018gamenet,
-  title="{GAMENet: Graph Augmented MEmory Networks for Recommending Medication Combination}",
-  author={Shang, Junyuan and Xiao, Cao and Ma, Tengfei and Li, Hongyan and Sun, Jimeng},
-  journal={arXiv preprint arXiv:1809.01852},
-  year={2018}
-}
-```
